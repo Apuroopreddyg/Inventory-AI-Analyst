@@ -1,0 +1,30 @@
+# Virtual Environment
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment variables and secrets
+.env
+.env.*
+
+# SQLite databases (LangGraph checkpoints)
+*.sqlite
+*.sqlite3
+*.db
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# Node.js (for React frontend)
+node_modules/
+dist/
+
+# OS generated files
+.DS_Store
+Thumbs.db

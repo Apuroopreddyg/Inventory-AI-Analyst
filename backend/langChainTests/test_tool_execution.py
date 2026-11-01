@@ -1,0 +1,24 @@
+from langchain_ollama import ChatOllama
+
+from tools.inventory_tools import get_low_stock_items
+
+llm = ChatOllama(
+    model="qwen3:4b"
+)
+
+llm_with_tools = llm.bind_tools(
+    [get_low_stock_items]
+)
+
+response = llm_with_tools.invoke(
+    "Show low stock items"
+)
+
+print("TOOL CALLS:")
+print(response.tool_calls)
+
+print("\nEXECUTING TOOL...\n")
+
+tool_result = get_low_stock_items.invoke({})
+
+print(tool_result)
