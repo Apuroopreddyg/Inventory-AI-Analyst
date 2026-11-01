@@ -1,116 +1,118 @@
+
 from langchain_ollama import ChatOllama
-from langchain.messages import SystemMessage, HumanMessage
-from schemas.inventory_schema import InventoryReport
-
-llm = ChatOllama(
-    model="qwen3:4b",
-    temperature=0
-)
-
-from langchain.messages import (
-    SystemMessage,
-    HumanMessage,
-    ToolMessage
-)
-
-SYSTEM_PROMPT = """
-You are an Inventory AI Analyst for a business.
-
-Your responsibilities:
-- Analyze inventory data provided by tools.
-- Answer questions accurately using tool results.
-- Identify low-stock products and pending deliveries.
-- Summarize inventory transactions.
-
-Rules:
-- Be concise, clear, and professional.
-- Use bullet points or tables when appropriate.
-- Never invent inventory data.
-- Never make assumptions about missing data.
-- If the tool returns an empty list, simply state that no records were found.
-- Do not add unnecessary explanations or generic recommendations.
-- Only recommend actions when the data clearly supports them.
-"""
-
+from langchain_core.messages import ToolMessage
 from tools.inventory_tools import (
     get_low_stock_items,
-    get_pending_deliveries,
-    get_monthly_inventory
+    get_monthly_inventory,
+)
+from agent.multi_agent_state import MultiAgentState
+
+# Inventory specialist tools
+INVENTORY_TOOLS = [
+    get_low_stock_items,
+    get_monthly_inventory,
+]
+
+# Specialized LLM
+llm = ChatOllama(
+    model="qwen3:4b",
+    temperature=0,
 )
 
-TOOLS = {
-    "get_low_stock_items": get_low_stock_items,
-    "get_pending_deliveries": get_pending_deliveries,
-    "get_monthly_inventory": get_monthly_inventory
-}
+# Bind tools to the LLM
+inventory_llm = llm.bind_tools(INVENTORY_TOOLS)
 
-llm_with_tools = llm.bind_tools(
-    list(TOOLS.values())
-)
+# System instructions
+INVENTORY_SYSTEM_PROMPT = """
+You are an Inventory Specialist Agent.
 
-structured_llm = llm.with_structured_output(InventoryReport)
+Your responsibilities:
+- Analyze inventory stock levels.
+- Identify low-stock products.
+- Provide inventory details.
+- Analyze inventory received this month.
+
+Rules:
+- Use tools whenever database information is required.
+- Never invent inventory data.
+- Answer clearly and concisely.
+- Do not handle vendor analysis or delivery management.
+- Do not execute inventory modifications or purchases.
+- You are ONLY responsible for inventory-related information.
+- Do not mention limitations of other specialists or tools.
+- Do not discuss pending deliveries or vendor analysis.
+- Answer only the specific inventory question assigned to you.
+"""
 
 
-def ask_agent(question):
+def inventory_agent(state: dict):
 
-    messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=question)
-    ]
+    messages = state["messages"]
 
-    max_iterations = 5
+    # Step 1: Ask LLM to decide which tool to call
+    response = inventory_llm.invoke(
+        [
+            {"role": "system", "content": INVENTORY_SYSTEM_PROMPT},
+            *messages,
+        ]
+    )
 
-    for iteration in range(max_iterations):
+    # Step 2: Execute requested tools
+    if response.tool_calls:
 
-        # Step 1: Invoke the LLM
-        try:
-            response = llm_with_tools.invoke(messages)
+        tool_messages = []
 
-        except Exception as error:
-            print(f"LLM Error: {error}")
-            return "Sorry, I couldn't process your request."
-
-        # Step 2: Store the LLM response
-        messages.append(response)
-
-        # Step 3: Check if the LLM requested tools
-        if not response.tool_calls:
-            return response.content
-
-        # Step 4: Execute requested tools
         for tool_call in response.tool_calls:
 
             tool_name = tool_call["name"]
             tool_args = tool_call["args"]
-            tool_call_id = tool_call["id"]
 
-            # Step 5: Validate the tool name
-            if tool_name not in TOOLS:
+            selected_tool = next(
+                tool for tool in INVENTORY_TOOLS
+                if tool.name == tool_name
+            )
 
-                tool_result = f"Error: Unknown tool '{tool_name}'."
+            tool_result = selected_tool.invoke(tool_args)
 
-            else:
-
-                # Step 6: Execute tool safely
-                try:
-                    tool_result = TOOLS[tool_name].invoke(tool_args)
-
-                except Exception as error:
-                    print(f"Tool Error ({tool_name}): {error}")
-
-                    tool_result = (
-                        f"Error executing {tool_name}. "
-                        "The data could not be retrieved."
-                    )
-
-            # Step 7: Return result to the LLM
-            messages.append(
+            tool_messages.append(
                 ToolMessage(
                     content=str(tool_result),
-                    tool_call_id=tool_call_id
+                    tool_call_id=tool_call["id"],
                 )
             )
 
-    # Step 8: Maximum iteration limit
-    return "I couldn't complete the analysis within the allowed steps."
+        # Step 3: Send tool results back to LLM
+        final_response = inventory_llm.invoke(
+            [
+                {"role": "system", "content": INVENTORY_SYSTEM_PROMPT},
+                *messages,
+                response,
+                *tool_messages,
+            ]
+        )
 
+        return {
+            "messages": [response, *tool_messages, final_response]
+        }
+
+    # No tool required
+    return {
+        "messages": [response]
+    }
+
+
+def inventory_agent_node(state: MultiAgentState):
+
+    # Pass the shared conversation state to our specialist
+    result = inventory_agent(state)
+
+    # Extract the specialist's final response
+    final_message = result["messages"][-1]
+
+    return {
+        "messages": [final_message],
+        "inventory_result": final_message.content,
+        "agent_results": [
+            {"inventory": final_message.content}
+        ],
+    }

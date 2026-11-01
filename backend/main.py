@@ -11,7 +11,9 @@ from schemas.api_schema import (
     ChatResponse,
     ApprovalRequest,
 )
+from agent.multi_agent_graph import create_multi_agent_graph
 
+from fastapi.middleware.cors import CORSMiddleware
 
 # --------------------------------
 # Checkpointer and graph lifecycle
@@ -19,10 +21,16 @@ from schemas.api_schema import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+
     print("[STARTUP] Initializing Inventory AI Analyst...")
 
     with SqliteSaver.from_conn_string("inventory_api.sqlite") as checkpointer:
+
         app.state.inventory_graph = create_inventory_hitl_graph(
+            checkpointer
+        )
+
+        app.state.multi_agent_graph = create_multi_agent_graph(
             checkpointer
         )
 
@@ -41,6 +49,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --------------------------------
 # POST /chat
@@ -64,11 +79,11 @@ def chat(request: ChatRequest):
     }
 
     initial_state = {
-        "messages": [
-            HumanMessage(content=request.question)
-        ],
+        "messages": [HumanMessage(content=request.question)],
         "pending_action": {},
-        "approval_status": ""
+        "approval_status": "",
+        "user_question": request.question,
+        "tool_count": 0
     }
 
     try:
@@ -179,4 +194,62 @@ def approve_action(request: ApprovalRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Approval processing error: {str(e)}"
+        )
+
+
+# --------------------------------
+# POST /multi-agent-chat
+# --------------------------------
+
+@app.post("/multi-agent-chat", response_model=ChatResponse)
+def multi_agent_chat(request: ChatRequest):
+
+    thread_id = request.thread_id or str(uuid4())
+
+    print("\n[MULTI-AGENT] Request received.")
+    print(f"[MULTI-AGENT] Thread ID: {thread_id}")
+    print(f"[MULTI-AGENT] Question: {request.question}")
+
+    graph = app.state.multi_agent_graph
+
+    config = {
+        "configurable": {
+            "thread_id": thread_id
+        }
+    }
+
+    initial_state = {
+        "messages": [HumanMessage(content=request.question)],
+        "next_agent": "",
+        "agent_result": "",
+        "selected_agents": [],
+        "inventory_result": "",
+        "vendor_result": "",
+        "analytics_result": "",
+        "agent_results": []
+    }
+
+    try:
+        result = graph.invoke(
+            initial_state,
+            config=config
+        )
+
+        final_answer = result.get("agent_result", "")
+
+        print("[MULTI-AGENT] Execution completed.")
+        print(f"[MULTI-AGENT] Final answer: {final_answer}")
+
+        return ChatResponse(
+            thread_id=thread_id,
+            status="completed",
+            response=final_answer
+        )
+
+    except Exception as e:
+        print(f"[ERROR] Multi-agent execution failed: {str(e)}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Multi-agent execution error: {str(e)}"
         )

@@ -27,7 +27,8 @@ with SqliteSaver.from_conn_string("inventory_hitl.sqlite") as checkpointer:
         {
             "messages": [HumanMessage(content=question)],
             "pending_action": {},
-            "approval_status": ""
+            "approval_status": "",
+            "user_question": question
         },
         config=config
     )
